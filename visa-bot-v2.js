@@ -851,10 +851,12 @@ async function runBot() {
     log(`City: ${CONFIG.preferences.city}`);
     log(`Date Range: ${CONFIG.preferences.startDate.toISOString().split('T')[0]} to ${CONFIG.preferences.endDate.toISOString().split('T')[0]}`);
 
+    const dateRange = CONFIG.preferences.startDate.toISOString().split('T')[0] + ' to ' + CONFIG.preferences.endDate.toISOString().split('T')[0];
     sendTelegram(
         `🚀 <b>Bot Started</b>\n` +
         `📧 ${CONFIG.credentials.email}\n` +
         `📍 ${CONFIG.preferences.city}\n` +
+        `📅 Range: ${dateRange}\n` +
         `🔒 IP: ${proxyIP || 'Direct'}\n` +
         `⚡ Target: ${CONFIG.bot.targetCPM} CPM`
     );
@@ -912,7 +914,7 @@ async function runBot() {
         // Navigate
         await navigateToAppointmentPage(page);
 
-        sendTelegram(`✅ <b>Logged In</b>\nMonitoring for slots...`);
+        sendTelegram(`✅ <b>Logged In</b>\n📧 ${CONFIG.credentials.email}\n📍 ${CONFIG.preferences.city}\nMonitoring for slots...`);
 
         // Monitoring loop
         let checkCount = 0;
@@ -1057,6 +1059,9 @@ async function runBot() {
                 if (Date.now() - lastTelegramUpdate > 60000) {
                     sendTelegram(
                         `📊 <b>Status</b>\n` +
+                        `📧 ${CONFIG.credentials.email}\n` +
+                        `📍 ${CONFIG.preferences.city}\n` +
+                        `📅 Range: ${CONFIG.preferences.startDate.toISOString().split('T')[0]} to ${CONFIG.preferences.endDate.toISOString().split('T')[0]}\n` +
                         `⚡ ${cpm} CPM\n` +
                         `🔄 ${checkCount} checks\n` +
                         `📅 Current: ${dateDisplay}\n` +

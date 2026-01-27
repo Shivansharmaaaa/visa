@@ -686,7 +686,8 @@ async function runBot() {
     log('City: ' + CONFIG.preferences.city);
     log('Date Range: ' + CONFIG.preferences.startDate.toISOString().split('T')[0] + ' to ' + CONFIG.preferences.endDate.toISOString().split('T')[0]);
 
-    sendTelegram('<b>Bot Started</b>\n' + CONFIG.credentials.email + '\n' + CONFIG.preferences.city + '\nIP: ' + (proxyIP || 'Direct'));
+    const dateRange = CONFIG.preferences.startDate.toISOString().split('T')[0] + ' to ' + CONFIG.preferences.endDate.toISOString().split('T')[0];
+    sendTelegram('<b>Bot Started</b>\n📧 ' + CONFIG.credentials.email + '\n📍 ' + CONFIG.preferences.city + '\n📅 ' + dateRange + '\n🔒 IP: ' + (proxyIP || 'Direct') + '\n⚡ Target: ' + CONFIG.bot.targetCPM + ' CPM');
 
     let browser;
     let page;
@@ -731,7 +732,7 @@ async function runBot() {
         await login(page);
         await navigateToAppointmentPage(page);
 
-        sendTelegram('<b>Logged In</b>\nMonitoring for slots...');
+        sendTelegram('<b>Logged In</b>\n📧 ' + CONFIG.credentials.email + '\n📍 ' + CONFIG.preferences.city + '\nMonitoring for slots...');
 
         let checkCount = 0;
         const startTime = Date.now();
@@ -851,7 +852,7 @@ async function runBot() {
                 }
 
                 if (Date.now() - lastTelegramUpdate > 60000) {
-                    sendTelegram('<b>Status</b>\n' + cpm + ' CPM\n' + checkCount + ' checks\nCurrent: ' + dateDisplay + '\nBest: ' + closestDisplay + '\nNext verify: ' + nextVerifyIn + 'm');
+                    sendTelegram('<b>Status</b>\n📧 ' + CONFIG.credentials.email + '\n📍 ' + CONFIG.preferences.city + '\n📅 Range: ' + CONFIG.preferences.startDate.toISOString().split('T')[0] + ' to ' + CONFIG.preferences.endDate.toISOString().split('T')[0] + '\n⚡ ' + cpm + ' CPM\n🔄 ' + checkCount + ' checks\n📅 Current: ' + dateDisplay + '\n📅 Best: ' + closestDisplay + '\n🔍 Next verify: ' + nextVerifyIn + 'm');
                     lastTelegramUpdate = Date.now();
                 }
 
