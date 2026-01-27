@@ -70,6 +70,8 @@ let availableDate = null;
 let availableTime = null;
 let lastResponseTime = 0;
 let closestSlotFound = null;
+let lastRequestTime = 0;
+let lastLatency = 0;
 
 // ============================================================================
 // LOGGING
@@ -254,6 +256,9 @@ function setupResponseListener(page) {
                 if (data && Array.isArray(data) && data.length > 0) {
                     availableDate = data[0];
                     lastResponseTime = Date.now();
+                    if (lastRequestTime > 0) {
+                        lastLatency = lastResponseTime - lastRequestTime;
+                    }
 
                     const slotDate = new Date(availableDate.date);
                     const today = new Date();
@@ -485,6 +490,7 @@ async function resetSelection(page) {
         const currentValue = await page.$eval(facilitySelector, el => el.value).catch(() => null);
 
         if (currentValue) {
+            lastRequestTime = Date.now();
             await page.selectOption(facilitySelector, currentValue);
         }
     } catch (e) {
@@ -1028,7 +1034,8 @@ async function runBot() {
 
                 // Log every second
                 if (checkCount % Math.ceil(CONFIG.bot.targetCPM / 60) === 0) {
-                    console.log(`\x1b[44m[${cpm} CPM]\x1b[0m #${checkCount} | Slot: ${dateDisplay} | Best: ${closestDisplay} | Verify: ${nextVerifyIn}m | Cookie: ${nextCookieReset}m`);
+                    const latencyDisplay = lastLatency > 0 ? lastLatency + 'ms' : '--';
+                    console.log(`\x1b[44m[${cpm} CPM]\x1b[0m #${checkCount} | Latency: ${latencyDisplay} | Slot: ${dateDisplay} | Best: ${closestDisplay} | Verify: ${nextVerifyIn}m | Cookie: ${nextCookieReset}m`);
                 }
 
                 // INSTANT BOOKING - no delays when slot found!
