@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets - NEVER commit
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+npm-debug.log*
+tmp/
+temp/
+
+# Playwright
+playwright-report/
+test-results/
+playwright/.cache/

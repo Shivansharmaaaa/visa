@@ -1,0 +1,32 @@
+{
+  "name": "visa-appointment-bot-v2",
+  "version": "2.0.0",
+  "description": "US Visa Appointment Bot with IP protection, fresh data, and accurate CPM",
+  "main": "visa-bot-v2.js",
+  "scripts": {
+    "start": "node visa-bot-v2.js",
+    "start:headless": "HEADLESS=true node visa-bot-v2.js",
+    "start:no-proxy": "PROXY_ENABLED=false node visa-bot-v2.js",
+    "start:old": "node visa-bot.js",
+    "test:proxy": "node -e \"require('./visa-bot-v2.js')\"",
+    "install:browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "playwright": "^1.58.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "visa",
+    "appointment",
+    "automation",
+    "playwright",
+    "proxy"
+  ],
+  "author": "",
+  "license": "ISC"
+}
