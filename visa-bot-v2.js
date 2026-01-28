@@ -599,141 +599,101 @@ async function navigateToAppointmentPage(page) {
 // ============================================================================
 async function performBooking(page, slot) {
     const startTime = Date.now();
-    log(`🚀 ULTRA FAST BOOKING: ${slot.date}`, 'SUCCESS');
-
-    const [targetYear, targetMonth, targetDay] = slot.date.split('-').map(Number);
+    log(`🚀 INSTANT BOOKING: ${slot.date}`, 'SUCCESS');
 
     try {
-        // Reset time for fresh capture
-        availableTime = null;
-
-        // STEP 1: Click date input and select date - ALL IN ONE FAST OPERATION
-        const dateSelected = await page.evaluate(({ targetYear, targetMonth, targetDay }) => {
-            return new Promise((resolve) => {
-                // Click the date input to open picker
-                const dateInput = document.querySelector('#appointments_consulate_appointment_date');
-                if (!dateInput) {
-                    resolve(false);
-                    return;
-                }
-                dateInput.focus();
-                dateInput.click();
-
-                // Wait for datepicker and navigate
-                const startNav = Date.now();
-                const navigate = () => {
-                    if (Date.now() - startNav > 3000) {
-                        resolve(false);
-                        return;
-                    }
-
-                    const datepicker = document.querySelector('.ui-datepicker');
-                    if (!datepicker || datepicker.style.display === 'none') {
-                        setTimeout(navigate, 5);
-                        return;
-                    }
-
-                    const monthSelect = document.querySelector('.ui-datepicker-month');
-                    const yearSelect = document.querySelector('.ui-datepicker-year');
-
-                    // Fast path: Use dropdowns if available
-                    if (monthSelect && monthSelect.tagName === 'SELECT' && yearSelect && yearSelect.tagName === 'SELECT') {
-                        yearSelect.value = targetYear.toString();
-                        yearSelect.dispatchEvent(new Event('change', { bubbles: true }));
-
-                        // Immediate month change
-                        requestAnimationFrame(() => {
-                            const mSel = document.querySelector('.ui-datepicker-month');
-                            if (mSel) {
-                                mSel.value = (targetMonth - 1).toString();
-                                mSel.dispatchEvent(new Event('change', { bubbles: true }));
-                            }
-                            requestAnimationFrame(() => clickDay());
-                        });
-                        return;
-                    }
-
-                    // Button navigation fallback
-                    const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-                    const curMonth = monthSelect?.tagName === 'SELECT'
-                        ? parseInt(monthSelect.value) + 1
-                        : months.indexOf(monthSelect?.textContent?.trim() || '') + 1;
-                    const curYear = parseInt(yearSelect?.textContent || yearSelect?.value || new Date().getFullYear());
-
-                    if (curMonth === targetMonth && curYear === targetYear) {
-                        clickDay();
-                        return;
-                    }
-
-                    const targetD = new Date(targetYear, targetMonth - 1);
-                    const currentD = new Date(curYear, curMonth - 1);
-                    const btn = targetD > currentD
-                        ? document.querySelector('.ui-datepicker-next:not(.ui-state-disabled)')
-                        : document.querySelector('.ui-datepicker-prev:not(.ui-state-disabled)');
-
-                    if (btn) {
-                        btn.click();
-                        setTimeout(navigate, 2); // 2ms between clicks
-                    } else {
-                        resolve(false);
-                    }
-                };
-
-                const clickDay = () => {
-                    const cells = document.querySelectorAll('.ui-datepicker td[data-handler="selectDay"] a, .ui-datepicker td:not(.ui-datepicker-unselectable) a.ui-state-default');
-                    for (const cell of cells) {
-                        if (parseInt(cell.textContent.trim()) === targetDay) {
-                            cell.click();
-                            resolve(true);
-                            return;
-                        }
-                    }
-                    resolve(false);
-                };
-
-                navigate();
-            });
-        }, { targetYear, targetMonth, targetDay });
-
-        if (!dateSelected) {
-            log('Date selection failed', 'WARN');
-            return false;
-        }
-
-        // STEP 2: Wait for time slot - FAST POLLING
-        let timeWait = 0;
-        while (availableTime === null && timeWait < 50) { // Max 500ms
-            await page.waitForTimeout(10);
-            timeWait++;
-        }
-
-        // Quick check dropdown if listener didn't catch it
-        if (!availableTime) {
-            availableTime = await page.$eval('#appointments_consulate_appointment_time option[value]:not([value=""])',
-                el => el.value).catch(() => null);
-        }
-
-        if (!availableTime) {
-            log('No time slot', 'WARN');
-            return false;
-        }
-
-        // STEP 3: Select time + Submit + Confirm - PARALLEL/FAST
-        await page.selectOption('#appointments_consulate_appointment_time', availableTime);
-
-        // Click submit immediately
-        await page.click('#appointments_submit');
-
-        // Look for confirm button immediately (don't wait)
-        const confirmBtn = await page.$('a.button.alert, a.button.primary, a[href*="confirm"], .button:has-text("Confirm")');
-        if (confirmBtn) {
-            await confirmBtn.click();
-        } else {
-            // Wait briefly for popup
+        // ULTRA FAST: Set date directly + fetch times API + set time + submit - ALL VIA JS
+        const result = await page.evaluate(async (targetDate) => {
             try {
-                const btn = await page.waitForSelector('a.button.alert, a.button.primary', { timeout: 500 });
-                if (btn) await btn.click();
-            } catch (e) {}
+                // Step 1: Set date input directly (no datepicker navigation!)
+                const dateInput = document.querySelector('#appointments_consulate_appointment_date');
+                if (!dateInput) return { success: false, error: 'No date input' };
+
+                // Set value directly
+                dateInput.value = targetDate;
+                dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+                dateInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+                // Step 2: Find the times API URL from the page and fetch times directly
+                // The URL pattern is like: /en-ca/niv/schedule/XXXXX/appointment/times/YYY.json?date=YYYY-MM-DD
+                const currentUrl = window.location.href;
+                const scheduleMatch = currentUrl.match(/schedule\/(\d+)/);
+                const facilitySelect = document.querySelector('#appointments_consulate_appointment_facility_id');
+                const facilityId = facilitySelect?.value;
+
+                if (!scheduleMatch || !facilityId) {
+                    return { success: false, error: 'Cannot determine API URL' };
+                }
+
+                const baseUrl = currentUrl.split('/appointment')[0];
+                const timesUrl = `${baseUrl}/appointment/times/${facilityId}.json?date=${targetDate}`;
+
+                // Fetch times directly
+                const response = await fetch(timesUrl, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                });
+                const data = await response.json();
+
+                if (!data.available_times || data.available_times.length === 0) {
+                    return { success: false, error: 'No times available' };
+                }
+
+                const selectedTime = data.available_times[0];
+
+                // Step 3: Set time dropdown directly
+                const timeSelect = document.querySelector('#appointments_consulate_appointment_time');
+                if (!timeSelect) return { success: false, error: 'No time select' };
+
+                // Add option if not exists and select it
+                let option = timeSelect.querySelector(`option[value="${selectedTime}"]`);
+                if (!option) {
+                    option = document.createElement('option');
+                    option.value = selectedTime;
+                    option.textContent = selectedTime;
+                    timeSelect.appendChild(option);
+                }
+                timeSelect.value = selectedTime;
+                timeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+
+                // Step 4: Click submit
+                const submitBtn = document.querySelector('#appointments_submit');
+                if (submitBtn) submitBtn.click();
+
+                return { success: true, time: selectedTime };
+            } catch (e) {
+                return { success: false, error: e.message };
+            }
+        }, slot.date);
+
+        if (!result.success) {
+            log(`Booking failed: ${result.error}`, 'WARN');
+            return false;
+        }
+
+        log(`Time set: ${result.time}`, 'SUCCESS');
+
+        // Step 5: Handle confirmation popup (outside evaluate for reliability)
+        try {
+            const confirmBtn = await page.waitForSelector(
+                'a.button.alert, a.button.primary, input[value="Confirm"]',
+                { timeout: 1000 }
+            );
+            if (confirmBtn) {
+                await confirmBtn.click();
+                log('Confirmed!', 'SUCCESS');
+            }
+        } catch (e) {
+            // Try clicking any visible confirm button
+            await page.evaluate(() => {
+                const btns = document.querySelectorAll('a.button.alert, a.button.primary, .confirm-button');
+                for (const btn of btns) {
+                    if (btn.offsetParent !== null) { // visible
+                        btn.click();
+                        break;
+                    }
+                }
+            });
         }
 
         const elapsed = Date.now() - startTime;
