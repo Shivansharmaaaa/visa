@@ -600,7 +600,6 @@ async function navigateToAppointmentPage(page) {
 async function performBooking(page, slot) {
     const startTime = Date.now();
     log(`🚀 ULTRA FAST BOOKING: ${slot.date}`, 'SUCCESS');
-    sendTelegram(`🚀 <b>BOOKING NOW!</b>\n📅 ${slot.date}`);
 
     const [targetYear, targetMonth, targetDay] = slot.date.split('-').map(Number);
 
@@ -608,224 +607,139 @@ async function performBooking(page, slot) {
         // Reset time for fresh capture
         availableTime = null;
 
-        // STEP 1: Click date input to open datepicker
-        const dateInput = await page.$('#appointments_consulate_appointment_date');
-        if (!dateInput) {
-            log('Date input not found!', 'ERROR');
-            return false;
-        }
-
-        // Try multiple click methods
-        await dateInput.click();
-        await page.waitForTimeout(100);
-
-        // Wait for datepicker to appear
-        try {
-            await page.waitForSelector('.ui-datepicker:visible, .ui-datepicker', { timeout: 3000 });
-        } catch (e) {
-            // Try clicking again with JavaScript
-            await page.evaluate(() => {
-                const input = document.querySelector('#appointments_consulate_appointment_date');
-                if (input) {
-                    input.focus();
-                    input.click();
-                }
-            });
-            await page.waitForTimeout(200);
-        }
-
-        // STEP 2: Navigate to correct month and click day
+        // STEP 1: Click date input and select date - ALL IN ONE FAST OPERATION
         const dateSelected = await page.evaluate(({ targetYear, targetMonth, targetDay }) => {
             return new Promise((resolve) => {
-                let attempts = 0;
-                const maxAttempts = 50; // More attempts, but still fast
+                // Click the date input to open picker
+                const dateInput = document.querySelector('#appointments_consulate_appointment_date');
+                if (!dateInput) {
+                    resolve(false);
+                    return;
+                }
+                dateInput.focus();
+                dateInput.click();
 
-                const navigateAndSelect = () => {
-                    attempts++;
+                // Wait for datepicker and navigate
+                const startNav = Date.now();
+                const navigate = () => {
+                    if (Date.now() - startNav > 3000) {
+                        resolve(false);
+                        return;
+                    }
 
-                    // Check if datepicker is visible
                     const datepicker = document.querySelector('.ui-datepicker');
                     if (!datepicker || datepicker.style.display === 'none') {
-                        if (attempts >= maxAttempts) {
-                            console.log('Datepicker not visible after max attempts');
-                            resolve(false);
-                            return true; // Stop trying
-                        }
-                        return false; // Keep trying
+                        setTimeout(navigate, 5);
+                        return;
                     }
 
-                    const monthEl = document.querySelector('.ui-datepicker-month');
-                    const yearEl = document.querySelector('.ui-datepicker-year');
-                    if (!monthEl || !yearEl) {
-                        if (attempts >= maxAttempts) {
-                            console.log('Month/year elements not found');
-                            resolve(false);
-                            return true;
-                        }
-                        return false;
+                    const monthSelect = document.querySelector('.ui-datepicker-month');
+                    const yearSelect = document.querySelector('.ui-datepicker-year');
+
+                    // Fast path: Use dropdowns if available
+                    if (monthSelect && monthSelect.tagName === 'SELECT' && yearSelect && yearSelect.tagName === 'SELECT') {
+                        yearSelect.value = targetYear.toString();
+                        yearSelect.dispatchEvent(new Event('change', { bubbles: true }));
+
+                        // Immediate month change
+                        requestAnimationFrame(() => {
+                            const mSel = document.querySelector('.ui-datepicker-month');
+                            if (mSel) {
+                                mSel.value = (targetMonth - 1).toString();
+                                mSel.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                            requestAnimationFrame(() => clickDay());
+                        });
+                        return;
                     }
 
-                    let currentMonth, currentYear;
-                    if (monthEl.tagName === 'SELECT') {
-                        currentMonth = parseInt(monthEl.value) + 1;
-                        currentYear = parseInt(yearEl.value || yearEl.textContent);
+                    // Button navigation fallback
+                    const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+                    const curMonth = monthSelect?.tagName === 'SELECT'
+                        ? parseInt(monthSelect.value) + 1
+                        : months.indexOf(monthSelect?.textContent?.trim() || '') + 1;
+                    const curYear = parseInt(yearSelect?.textContent || yearSelect?.value || new Date().getFullYear());
+
+                    if (curMonth === targetMonth && curYear === targetYear) {
+                        clickDay();
+                        return;
+                    }
+
+                    const targetD = new Date(targetYear, targetMonth - 1);
+                    const currentD = new Date(curYear, curMonth - 1);
+                    const btn = targetD > currentD
+                        ? document.querySelector('.ui-datepicker-next:not(.ui-state-disabled)')
+                        : document.querySelector('.ui-datepicker-prev:not(.ui-state-disabled)');
+
+                    if (btn) {
+                        btn.click();
+                        setTimeout(navigate, 2); // 2ms between clicks
                     } else {
-                        const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-                        currentMonth = months.indexOf(monthEl.textContent.trim()) + 1;
-                        currentYear = parseInt(yearEl.textContent.trim());
+                        resolve(false);
                     }
-
-                    console.log(`Current: ${currentYear}-${currentMonth}, Target: ${targetYear}-${targetMonth}`);
-
-                    // If correct month, look for the day
-                    if (currentMonth === targetMonth && currentYear === targetYear) {
-                        // Try multiple selectors for clickable days
-                        const selectors = [
-                            `.ui-datepicker td[data-handler="selectDay"] a`,
-                            `.ui-datepicker td:not(.ui-datepicker-unselectable) a`,
-                            `.ui-datepicker td.ui-datepicker-current-day a`,
-                            `.ui-datepicker td a.ui-state-default`
-                        ];
-
-                        for (const selector of selectors) {
-                            const cells = document.querySelectorAll(selector);
-                            for (const cell of cells) {
-                                const dayNum = parseInt(cell.textContent.trim());
-                                if (dayNum === targetDay) {
-                                    console.log(`Found day ${targetDay}, clicking...`);
-                                    cell.click();
-                                    resolve(true);
-                                    return true;
-                                }
-                            }
-                        }
-
-                        // Day not found in current month - might not be available
-                        console.log(`Day ${targetDay} not found as clickable in ${currentMonth}/${currentYear}`);
-                        if (attempts >= maxAttempts) {
-                            resolve(false);
-                            return true;
-                        }
-                        return false;
-                    }
-
-                    // Navigate to correct month
-                    const targetDate = new Date(targetYear, targetMonth - 1);
-                    const currentDate = new Date(currentYear, currentMonth - 1);
-
-                    if (targetDate > currentDate) {
-                        const nextBtn = document.querySelector('.ui-datepicker-next:not(.ui-state-disabled)');
-                        if (nextBtn) {
-                            console.log('Clicking next month');
-                            nextBtn.click();
-                        } else {
-                            console.log('Next button disabled or not found');
-                            if (attempts >= maxAttempts) {
-                                resolve(false);
-                                return true;
-                            }
-                        }
-                    } else {
-                        const prevBtn = document.querySelector('.ui-datepicker-prev:not(.ui-state-disabled)');
-                        if (prevBtn) {
-                            console.log('Clicking prev month');
-                            prevBtn.click();
-                        } else {
-                            console.log('Prev button disabled or not found');
-                            if (attempts >= maxAttempts) {
-                                resolve(false);
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
                 };
 
-                // Try immediately
-                if (navigateAndSelect()) return;
-
-                // Polling - 30ms intervals (slightly slower for stability)
-                const interval = setInterval(() => {
-                    if (navigateAndSelect()) {
-                        clearInterval(interval);
+                const clickDay = () => {
+                    const cells = document.querySelectorAll('.ui-datepicker td[data-handler="selectDay"] a, .ui-datepicker td:not(.ui-datepicker-unselectable) a.ui-state-default');
+                    for (const cell of cells) {
+                        if (parseInt(cell.textContent.trim()) === targetDay) {
+                            cell.click();
+                            resolve(true);
+                            return;
+                        }
                     }
-                }, 30);
-
-                // Safety timeout
-                setTimeout(() => {
-                    clearInterval(interval);
                     resolve(false);
-                }, 2000);
+                };
+
+                navigate();
             });
         }, { targetYear, targetMonth, targetDay });
 
-        log(`Date clicked: ${dateSelected}`, dateSelected ? 'SUCCESS' : 'WARN');
-
         if (!dateSelected) {
-            log('Failed to select date - the date may not be available in picker', 'WARN');
-            // Don't return false yet - let's check if date input has value
-            const dateValue = await page.$eval('#appointments_consulate_appointment_date', el => el.value).catch(() => '');
-            log(`Date input value: "${dateValue}"`, 'INFO');
-            if (!dateValue) {
-                return false;
-            }
+            log('Date selection failed', 'WARN');
+            return false;
         }
 
-        // STEP 3: Wait for time slot (longer wait since date selection triggers API call)
-        log('Waiting for time slots...', 'INFO');
+        // STEP 2: Wait for time slot - FAST POLLING
         let timeWait = 0;
-        const maxTimeWait = 100; // 2 seconds max
-        while (availableTime === null && timeWait < maxTimeWait) {
-            await page.waitForTimeout(20);
+        while (availableTime === null && timeWait < 50) { // Max 500ms
+            await page.waitForTimeout(10);
             timeWait++;
         }
 
-        // Also check if time dropdown has options
+        // Quick check dropdown if listener didn't catch it
         if (!availableTime) {
-            const timeOptions = await page.$$eval('#appointments_consulate_appointment_time option', opts =>
-                opts.filter(o => o.value).map(o => o.value)
-            ).catch(() => []);
-
-            if (timeOptions.length > 0) {
-                availableTime = timeOptions[0];
-                log(`Found time from dropdown: ${availableTime}`, 'INFO');
-            }
+            availableTime = await page.$eval('#appointments_consulate_appointment_time option[value]:not([value=""])',
+                el => el.value).catch(() => null);
         }
 
-        if (availableTime) {
-            // STEP 4: Select time
-            await page.selectOption('#appointments_consulate_appointment_time', availableTime);
-            log(`Time selected: ${availableTime}`, 'SUCCESS');
+        if (!availableTime) {
+            log('No time slot', 'WARN');
+            return false;
+        }
 
-            // Small wait to ensure selection registers
-            await page.waitForTimeout(50);
+        // STEP 3: Select time + Submit + Confirm - PARALLEL/FAST
+        await page.selectOption('#appointments_consulate_appointment_time', availableTime);
 
-            // STEP 5: SUBMIT
-            await page.click('#appointments_submit');
-            log('Submit clicked', 'INFO');
+        // Click submit immediately
+        await page.click('#appointments_submit');
 
-            // STEP 6: Handle confirmation popup
+        // Look for confirm button immediately (don't wait)
+        const confirmBtn = await page.$('a.button.alert, a.button.primary, a[href*="confirm"], .button:has-text("Confirm")');
+        if (confirmBtn) {
+            await confirmBtn.click();
+        } else {
+            // Wait briefly for popup
             try {
-                const confirmBtn = await page.waitForSelector(
-                    'a.button.alert, a.button.primary, input[value="Confirm"], a:has-text("Confirm"), .button:has-text("Confirm")',
-                    { timeout: 2000 }
-                );
-                if (confirmBtn) {
-                    await confirmBtn.click();
-                    log('Confirmation clicked', 'SUCCESS');
-                }
-            } catch (e) {
-                log('No confirmation popup found (might be auto-confirmed)', 'INFO');
-            }
-
-            const elapsed = Date.now() - startTime;
-            log(`🎉 BOOKED in ${elapsed}ms!`, 'SUCCESS');
-            sendTelegram(`🎉 <b>BOOKED!</b>\n📅 ${slot.date}\n⏱ ${elapsed}ms\n📧 ${CONFIG.credentials.email}`);
-            return true;
+                const btn = await page.waitForSelector('a.button.alert, a.button.primary', { timeout: 500 });
+                if (btn) await btn.click();
+            } catch (e) {}
         }
 
-        log('No time slot available after waiting', 'WARN');
-        return false;
+        const elapsed = Date.now() - startTime;
+        log(`🎉 BOOKED in ${elapsed}ms!`, 'SUCCESS');
+        sendTelegram(`🎉 <b>BOOKED!</b>\n📅 ${slot.date}\n⏱ ${elapsed}ms\n📧 ${CONFIG.credentials.email}`);
+        return true;
 
     } catch (error) {
         log(`Booking error: ${error.message}`, 'ERROR');
@@ -1052,7 +966,11 @@ async function runBot() {
                             const booked = await performBooking(page, slot);
                             if (booked) {
                                 log(`🎉🎉🎉 SUCCESSFULLY BOOKED! 🎉🎉🎉`, 'SUCCESS');
-                                break;
+                                log(`🛑 STOPPING BOT - BOOKING COMPLETE`, 'SUCCESS');
+                                sendTelegram(`🛑 <b>Bot Stopped</b>\n✅ Booking completed successfully!`);
+                                if (browser) await browser.close().catch(() => {});
+                                if (verifyBrowser) await verifyBrowser.close().catch(() => {});
+                                process.exit(0);
                             }
                         } catch (bookErr) {
                             log(`Booking attempt failed: ${bookErr.message}`, 'ERROR');
