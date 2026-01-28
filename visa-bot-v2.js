@@ -615,7 +615,6 @@ async function performBooking(page, slot) {
                 dateInput.dispatchEvent(new Event('input', { bubbles: true }));
 
                 // Step 2: Find the times API URL from the page and fetch times directly
-                // The URL pattern is like: /en-ca/niv/schedule/XXXXX/appointment/times/YYY.json?date=YYYY-MM-DD
                 const currentUrl = window.location.href;
                 const scheduleMatch = currentUrl.match(/schedule\/(\d+)/);
                 const facilitySelect = document.querySelector('#appointments_consulate_appointment_facility_id');
@@ -660,11 +659,45 @@ async function performBooking(page, slot) {
                 const submitBtn = document.querySelector('#appointments_submit');
                 if (submitBtn) submitBtn.click();
 
-                return { success: true, time: selectedTime };
+                return { success: true, time: selectedTime, submitted: true };
             } catch (e) {
                 return { success: false, error: e.message };
             }
-        }, slot.date);
+        }, slot.date).catch(err => {
+            // Navigation/context destroyed = submit worked and page navigated!
+            if (err.message.includes('context') || err.message.includes('navigation') || err.message.includes('destroyed')) {
+                return { success: true, navigated: true };
+            }
+            return { success: false, error: err.message };
+        });
+
+        // If page navigated, submit worked - now handle confirmation
+        if (result.navigated || result.submitted) {
+            log(`Submit successful, handling confirmation...`, 'SUCCESS');
+
+            // Wait for page to load after navigation
+            await page.waitForLoadState('domcontentloaded').catch(() => {});
+
+            // Try to click confirmation button
+            try {
+                const confirmBtn = await page.waitForSelector(
+                    'a.button.alert, a.button.primary, input[value="Confirm"], a:has-text("Confirm")',
+                    { timeout: 2000 }
+                );
+                if (confirmBtn) {
+                    await confirmBtn.click();
+                    log('Confirmed!', 'SUCCESS');
+                }
+            } catch (e) {
+                // Maybe already confirmed or no popup needed
+                log('No confirm popup (may be auto-confirmed)', 'INFO');
+            }
+
+            const elapsed = Date.now() - startTime;
+            log(`🎉 BOOKED in ${elapsed}ms!`, 'SUCCESS');
+            sendTelegram(`🎉 <b>BOOKED!</b>\n📅 ${slot.date}\n⏱ ${elapsed}ms\n📧 ${CONFIG.credentials.email}`);
+            return true;
+        }
 
         if (!result.success) {
             log(`Booking failed: ${result.error}`, 'WARN');
@@ -672,29 +705,6 @@ async function performBooking(page, slot) {
         }
 
         log(`Time set: ${result.time}`, 'SUCCESS');
-
-        // Step 5: Handle confirmation popup (outside evaluate for reliability)
-        try {
-            const confirmBtn = await page.waitForSelector(
-                'a.button.alert, a.button.primary, input[value="Confirm"]',
-                { timeout: 1000 }
-            );
-            if (confirmBtn) {
-                await confirmBtn.click();
-                log('Confirmed!', 'SUCCESS');
-            }
-        } catch (e) {
-            // Try clicking any visible confirm button
-            await page.evaluate(() => {
-                const btns = document.querySelectorAll('a.button.alert, a.button.primary, .confirm-button');
-                for (const btn of btns) {
-                    if (btn.offsetParent !== null) { // visible
-                        btn.click();
-                        break;
-                    }
-                }
-            });
-        }
 
         const elapsed = Date.now() - startTime;
         log(`🎉 BOOKED in ${elapsed}ms!`, 'SUCCESS');
