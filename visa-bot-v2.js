@@ -379,8 +379,10 @@ async function verifyDataFreshness() {
         };
 
         if (CONFIG.proxy.enabled) {
+            // Playwright uses http:// for HTTP/HTTPS proxies, socks5:// for SOCKS
+            const proxyProtocol = CONFIG.proxy.type.startsWith('socks') ? CONFIG.proxy.type : 'http';
             launchOptions.proxy = {
-                server: `${CONFIG.proxy.type}://${CONFIG.proxy.server}`,
+                server: `${proxyProtocol}://${CONFIG.proxy.server}`,
                 username: verifyProxyUsername, // Use NEW session ID
                 password: CONFIG.proxy.password
             };
@@ -917,8 +919,10 @@ async function runBot() {
         }
 
         if (CONFIG.proxy.enabled) {
+            // Playwright uses http:// for HTTP/HTTPS proxies, socks5:// for SOCKS
+            const proxyProtocol = CONFIG.proxy.type.startsWith('socks') ? CONFIG.proxy.type : 'http';
             launchOptions.proxy = {
-                server: `${CONFIG.proxy.type}://${CONFIG.proxy.server}`,
+                server: `${proxyProtocol}://${CONFIG.proxy.server}`,
                 username: CONFIG.proxy.username,
                 password: CONFIG.proxy.password
             };
