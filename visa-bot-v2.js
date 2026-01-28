@@ -168,19 +168,36 @@ class ProxyHttpClient {
 const proxyClient = new ProxyHttpClient(CONFIG.proxy);
 
 // ============================================================================
-// TELEGRAM
+// TELEGRAM (direct, no proxy needed)
 // ============================================================================
 function sendTelegram(message) {
     if (!CONFIG.telegram.botToken || !CONFIG.telegram.chatId) return;
-    proxyClient.request(`https://api.telegram.org/bot${CONFIG.telegram.botToken}/sendMessage`, {
+
+    const postData = JSON.stringify({
+        chat_id: CONFIG.telegram.chatId,
+        text: message,
+        parse_mode: 'HTML'
+    });
+
+    const req = https.request({
+        hostname: 'api.telegram.org',
+        path: `/bot${CONFIG.telegram.botToken}/sendMessage`,
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            chat_id: CONFIG.telegram.chatId,
-            text: message,
-            parse_mode: 'HTML'
-        })
-    }).catch(() => {});
+        headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(postData)
+        },
+        timeout: 10000
+    }, (res) => {
+        // Response received - don't need to do anything
+    });
+
+    req.on('error', (err) => {
+        console.log(`Telegram error: ${err.message}`);
+    });
+
+    req.write(postData);
+    req.end();
 }
 
 // ============================================================================
@@ -233,8 +250,11 @@ function getRandomUserAgent() {
 }
 
 function getDelay(targetCPM) {
-    // Fixed delay based on target CPM - no jitter
-    return Math.floor(60000 / targetCPM);
+    // Account for ~100ms overhead (selectOption + network)
+    // Actual cycle = delay + overhead, so reduce delay to compensate
+    const overhead = 100;
+    const idealCycle = 60000 / targetCPM;
+    return Math.max(0, Math.floor(idealCycle - overhead));
 }
 
 // ============================================================================
@@ -486,13 +506,15 @@ async function verifyDataFreshness() {
 // ============================================================================
 async function resetSelection(page) {
     try {
-        const facilitySelector = '#appointments_consulate_appointment_facility_id';
-        const currentValue = await page.$eval(facilitySelector, el => el.value).catch(() => null);
-
-        if (currentValue) {
-            lastRequestTime = Date.now();
-            await page.selectOption(facilitySelector, currentValue);
-        }
+        // Use evaluate for faster execution - trigger change directly
+        await page.evaluate(() => {
+            const sel = document.querySelector('#appointments_consulate_appointment_facility_id');
+            if (sel && sel.value) {
+                // Just trigger change event - this calls the API
+                sel.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        });
+        lastRequestTime = Date.now();
     } catch (e) {
         // Ignore errors
     }
@@ -595,116 +617,74 @@ async function navigateToAppointmentPage(page) {
 }
 
 // ============================================================================
-// BOOKING - ULTRA FAST MODE (SAME BROWSER - NO NEW LAUNCH)
+// BOOKING - ULTRA FAST (API-TRIGGERED)
 // ============================================================================
 async function performBooking(page, slot) {
     const startTime = Date.now();
-    log(`🚀 INSTANT BOOKING: ${slot.date}`, 'SUCCESS');
+
+    // Send booking started notification
+    sendTelegram(`🚀 <b>BOOKING STARTED!</b>\n📅 ${slot.date}\n📧 ${CONFIG.credentials.email}`);
 
     try {
-        // ULTRA FAST: Set date directly + fetch times API + set time + submit - ALL VIA JS
-        const result = await page.evaluate(async (targetDate) => {
-            try {
-                // Step 1: Set date input directly (no datepicker navigation!)
-                const dateInput = document.querySelector('#appointments_consulate_appointment_date');
-                if (!dateInput) return { success: false, error: 'No date input' };
+        // Reset availableTime to capture fresh time for this date
+        availableTime = null;
 
-                // Set value directly
-                dateInput.value = targetDate;
+        // Step 1: Set date directly and trigger times API via JavaScript
+        // This simulates what happens when you select a date in datepicker
+        await page.evaluate((date) => {
+            const dateInput = document.querySelector('#appointments_consulate_appointment_date');
+            if (dateInput) {
+                dateInput.value = date;
+                // Trigger the change event which calls the times API
+                $(dateInput).trigger('change');
+                // Also trigger via native event
                 dateInput.dispatchEvent(new Event('change', { bubbles: true }));
-                dateInput.dispatchEvent(new Event('input', { bubbles: true }));
-
-                // Step 2: Find the times API URL from the page and fetch times directly
-                const currentUrl = window.location.href;
-                const scheduleMatch = currentUrl.match(/schedule\/(\d+)/);
-                const facilitySelect = document.querySelector('#appointments_consulate_appointment_facility_id');
-                const facilityId = facilitySelect?.value;
-
-                if (!scheduleMatch || !facilityId) {
-                    return { success: false, error: 'Cannot determine API URL' };
-                }
-
-                const baseUrl = currentUrl.split('/appointment')[0];
-                const timesUrl = `${baseUrl}/appointment/times/${facilityId}.json?date=${targetDate}`;
-
-                // Fetch times directly
-                const response = await fetch(timesUrl, {
-                    credentials: 'include',
-                    headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-                });
-                const data = await response.json();
-
-                if (!data.available_times || data.available_times.length === 0) {
-                    return { success: false, error: 'No times available' };
-                }
-
-                const selectedTime = data.available_times[0];
-
-                // Step 3: Set time dropdown directly
-                const timeSelect = document.querySelector('#appointments_consulate_appointment_time');
-                if (!timeSelect) return { success: false, error: 'No time select' };
-
-                // Add option if not exists and select it
-                let option = timeSelect.querySelector(`option[value="${selectedTime}"]`);
-                if (!option) {
-                    option = document.createElement('option');
-                    option.value = selectedTime;
-                    option.textContent = selectedTime;
-                    timeSelect.appendChild(option);
-                }
-                timeSelect.value = selectedTime;
-                timeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-
-                // Step 4: Click submit
-                const submitBtn = document.querySelector('#appointments_submit');
-                if (submitBtn) submitBtn.click();
-
-                return { success: true, time: selectedTime, submitted: true };
-            } catch (e) {
-                return { success: false, error: e.message };
             }
-        }, slot.date).catch(err => {
-            // Navigation/context destroyed = submit worked and page navigated!
-            if (err.message.includes('context') || err.message.includes('navigation') || err.message.includes('destroyed')) {
-                return { success: true, navigated: true };
+        }, slot.date);
+
+        // Step 2: Wait for times API response (captured by our listener)
+        // No timeout - just keep checking until we get it
+        while (!availableTime) {
+            await page.waitForTimeout(10);
+            // Also check if dropdown got populated
+            const dropdownTime = await page.$eval(
+                '#appointments_consulate_appointment_time option[value]:not([value=""])',
+                el => el.value
+            ).catch(() => null);
+            if (dropdownTime) {
+                availableTime = dropdownTime;
+                break;
             }
-            return { success: false, error: err.message };
+        }
+
+        // Step 3: Set time and submit immediately
+        await page.evaluate((time) => {
+            const timeSelect = document.querySelector('#appointments_consulate_appointment_time');
+            if (timeSelect) {
+                timeSelect.value = time;
+                $(timeSelect).trigger('change');
+            }
+            // Click submit
+            document.querySelector('#appointments_submit')?.click();
+        }, availableTime);
+
+        // Step 4: Wait for page navigation (form submit)
+        await page.waitForNavigation({ waitUntil: 'commit' }).catch(() => {});
+
+        // Step 5: Click confirm button
+        await page.evaluate(() => {
+            const confirmBtn = document.querySelector('a.button.alert, a.button.primary, input[value="Confirm"]');
+            if (confirmBtn) confirmBtn.click();
         });
 
-        // If page navigated, submit worked - now handle confirmation
-        if (result.navigated || result.submitted) {
-            log(`Submit successful, handling confirmation...`, 'SUCCESS');
+        // Verify: check if we're still on the appointment form
+        await page.waitForNavigation({ waitUntil: 'commit' }).catch(() => {});
+        const stillOnForm = await page.$('#appointments_submit').catch(() => null);
 
-            // Wait for page to load after navigation
-            await page.waitForLoadState('domcontentloaded').catch(() => {});
-
-            // Try to click confirmation button
-            try {
-                const confirmBtn = await page.waitForSelector(
-                    'a.button.alert, a.button.primary, input[value="Confirm"], a:has-text("Confirm")',
-                    { timeout: 2000 }
-                );
-                if (confirmBtn) {
-                    await confirmBtn.click();
-                    log('Confirmed!', 'SUCCESS');
-                }
-            } catch (e) {
-                // Maybe already confirmed or no popup needed
-                log('No confirm popup (may be auto-confirmed)', 'INFO');
-            }
-
-            const elapsed = Date.now() - startTime;
-            log(`🎉 BOOKED in ${elapsed}ms!`, 'SUCCESS');
-            sendTelegram(`🎉 <b>BOOKED!</b>\n📅 ${slot.date}\n⏱ ${elapsed}ms\n📧 ${CONFIG.credentials.email}`);
-            return true;
-        }
-
-        if (!result.success) {
-            log(`Booking failed: ${result.error}`, 'WARN');
+        if (stillOnForm) {
+            sendTelegram(`❌ <b>BOOKING FAILED</b>\n📅 ${slot.date}\nStill on form`);
             return false;
         }
-
-        log(`Time set: ${result.time}`, 'SUCCESS');
 
         const elapsed = Date.now() - startTime;
         log(`🎉 BOOKED in ${elapsed}ms!`, 'SUCCESS');
@@ -712,7 +692,15 @@ async function performBooking(page, slot) {
         return true;
 
     } catch (error) {
-        log(`Booking error: ${error.message}`, 'ERROR');
+        // Check if navigation happened (means submit worked)
+        const stillOnForm = await page.$('#appointments_submit').catch(() => null);
+        if (!stillOnForm) {
+            const elapsed = Date.now() - startTime;
+            log(`🎉 BOOKED in ${elapsed}ms!`, 'SUCCESS');
+            sendTelegram(`🎉 <b>BOOKED!</b>\n📅 ${slot.date}\n⏱ ${elapsed}ms\n📧 ${CONFIG.credentials.email}`);
+            return true;
+        }
+        sendTelegram(`❌ <b>BOOKING ERROR</b>\n📅 ${slot.date}\n${error.message}`);
         return false;
     }
 }
