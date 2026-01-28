@@ -502,23 +502,21 @@ async function verifyDataFreshness() {
 }
 
 // ============================================================================
-// TRIGGER FRESH REQUEST (re-select city) - OPTIMIZED FOR SPEED
+// TRIGGER FRESH REQUEST (re-select city)
 // ============================================================================
 async function resetSelection(page) {
     try {
+        // Reset stale data before new request
+        availableDate = null;
+
+        // Use selectOption which properly triggers all events including jQuery
+        const facilitySelector = '#appointments_consulate_appointment_facility_id';
+        const currentValue = await page.$eval(facilitySelector, el => el.value).catch(() => null);
+
+        if (currentValue) {
+            await page.selectOption(facilitySelector, currentValue);
+        }
         lastRequestTime = Date.now();
-        // Single evaluate call - faster than $eval + selectOption (saves ~50ms round trip)
-        await page.evaluate(() => {
-            const sel = document.querySelector('#appointments_consulate_appointment_facility_id');
-            if (sel && sel.value) {
-                // Trigger change event which calls the API
-                sel.dispatchEvent(new Event('change', { bubbles: true }));
-                // Also trigger jQuery if available
-                if (typeof $ !== 'undefined') {
-                    $(sel).trigger('change');
-                }
-            }
-        });
     } catch (e) {
         // Ignore errors
     }
