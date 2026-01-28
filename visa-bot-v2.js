@@ -49,7 +49,6 @@ const CONFIG = {
     },
     proxy: {
         enabled: process.env.PROXY_ENABLED !== 'false',
-        type: process.env.PROXY_TYPE || 'http',
         server: process.env.PROXY_SERVER || 'pr.oxylabs.io:7777',
         username: process.env.PROXY_USERNAME,
         password: process.env.PROXY_PASSWORD
@@ -91,7 +90,7 @@ function log(message, level = 'INFO') {
 }
 
 // ============================================================================
-// PROXY HTTP CLIENT (for Telegram and IP verification)
+// PROXY HTTP CLIENT (for Telegram only)
 // ============================================================================
 class ProxyHttpClient {
     constructor(proxyConfig) {
@@ -99,9 +98,6 @@ class ProxyHttpClient {
         this.proxyPort = parseInt(proxyConfig.server.split(':')[1]);
         this.proxyAuth = Buffer.from(`${proxyConfig.username}:${proxyConfig.password}`).toString('base64');
         this.enabled = proxyConfig.enabled;
-        this.proxyType = proxyConfig.type || 'http';
-        this.username = proxyConfig.username;
-        this.password = proxyConfig.password;
     }
 
     async request(url, options = {}) {
@@ -126,7 +122,6 @@ class ProxyHttpClient {
                 return;
             }
 
-            // HTTP CONNECT for http/https proxy
             const connectReq = http.request({
                 host: this.proxyHost,
                 port: this.proxyPort,
@@ -356,10 +351,8 @@ async function verifyDataFreshness() {
         };
 
         if (CONFIG.proxy.enabled) {
-            // Playwright uses http:// for HTTP/HTTPS proxies, socks5:// for SOCKS
-            const proxyProtocol = CONFIG.proxy.type.startsWith('socks') ? CONFIG.proxy.type : 'http';
             launchOptions.proxy = {
-                server: `${proxyProtocol}://${CONFIG.proxy.server}`,
+                server: `http://${CONFIG.proxy.server}`,
                 username: verifyProxyUsername, // Use NEW session ID
                 password: CONFIG.proxy.password
             };
@@ -896,10 +889,8 @@ async function runBot() {
         }
 
         if (CONFIG.proxy.enabled) {
-            // Playwright uses http:// for HTTP/HTTPS proxies, socks5:// for SOCKS
-            const proxyProtocol = CONFIG.proxy.type.startsWith('socks') ? CONFIG.proxy.type : 'http';
             launchOptions.proxy = {
-                server: `${proxyProtocol}://${CONFIG.proxy.server}`,
+                server: `http://${CONFIG.proxy.server}`,
                 username: CONFIG.proxy.username,
                 password: CONFIG.proxy.password
             };
