@@ -15,6 +15,7 @@ const stealth = require('puppeteer-extra-plugin-stealth')();
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
+const { SocksProxyAgent } = require('socks-proxy-agent');
 require('dotenv').config();
 
 chromium.use(stealth);
@@ -91,7 +92,7 @@ function log(message, level = 'INFO') {
 }
 
 // ============================================================================
-// PROXY HTTP CLIENT (for Telegram only)
+// PROXY HTTP CLIENT (for Telegram and IP verification)
 // ============================================================================
 class ProxyHttpClient {
     constructor(proxyConfig) {
@@ -99,6 +100,9 @@ class ProxyHttpClient {
         this.proxyPort = parseInt(proxyConfig.server.split(':')[1]);
         this.proxyAuth = Buffer.from(`${proxyConfig.username}:${proxyConfig.password}`).toString('base64');
         this.enabled = proxyConfig.enabled;
+        this.proxyType = proxyConfig.type || 'http';
+        this.username = proxyConfig.username;
+        this.password = proxyConfig.password;
     }
 
     async request(url, options = {}) {
@@ -123,6 +127,29 @@ class ProxyHttpClient {
                 return;
             }
 
+            // Use SOCKS5 proxy agent for socks5/socks5h
+            if (this.proxyType.startsWith('socks5')) {
+                const proxyUrl = `socks5://${encodeURIComponent(this.username)}:${encodeURIComponent(this.password)}@${this.proxyHost}:${this.proxyPort}`;
+                const agent = new SocksProxyAgent(proxyUrl);
+
+                const client = isHttps ? https : http;
+                const req = client.request(url, {
+                    method: options.method || 'GET',
+                    headers: options.headers || {},
+                    agent: agent,
+                    timeout: 15000
+                }, (res) => {
+                    let data = '';
+                    res.on('data', chunk => data += chunk);
+                    res.on('end', () => resolve({ status: res.statusCode, data }));
+                });
+                req.on('error', reject);
+                if (options.body) req.write(options.body);
+                req.end();
+                return;
+            }
+
+            // HTTP CONNECT for http proxy
             const connectReq = http.request({
                 host: this.proxyHost,
                 port: this.proxyPort,
