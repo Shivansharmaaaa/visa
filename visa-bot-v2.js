@@ -49,6 +49,7 @@ const CONFIG = {
     },
     proxy: {
         enabled: process.env.PROXY_ENABLED !== 'false',
+        type: process.env.PROXY_TYPE || 'http',
         server: process.env.PROXY_SERVER || 'pr.oxylabs.io:7777',
         username: process.env.PROXY_USERNAME,
         password: process.env.PROXY_PASSWORD
@@ -352,7 +353,7 @@ async function verifyDataFreshness() {
 
         if (CONFIG.proxy.enabled) {
             launchOptions.proxy = {
-                server: `http://${CONFIG.proxy.server}`,
+                server: `${CONFIG.proxy.type}://${CONFIG.proxy.server}`,
                 username: verifyProxyUsername, // Use NEW session ID
                 password: CONFIG.proxy.password
             };
@@ -890,7 +891,7 @@ async function runBot() {
 
         if (CONFIG.proxy.enabled) {
             launchOptions.proxy = {
-                server: `http://${CONFIG.proxy.server}`,
+                server: `${CONFIG.proxy.type}://${CONFIG.proxy.server}`,
                 username: CONFIG.proxy.username,
                 password: CONFIG.proxy.password
             };
