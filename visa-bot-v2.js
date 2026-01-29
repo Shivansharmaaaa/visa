@@ -73,6 +73,9 @@ let closestSlotFound = null;
 let lastRequestTime = 0;
 let lastLatency = 0;
 
+// Cached IDs (don't change during session - cache at login for faster booking)
+let cachedIds = { scheduleId: null, facilityId: null, csrf: null };
+
 // ============================================================================
 // LOGGING
 // ============================================================================
@@ -611,6 +614,20 @@ async function navigateToAppointmentPage(page) {
         log(`Selected city: ${target.text}`);
     }
 
+    // Cache IDs for faster booking (saves ~25ms per booking attempt)
+    cachedIds = await page.evaluate(() => {
+        const url = window.location.href;
+        const scheduleMatch = url.match(/schedule\/(\d+)/);
+        const facilitySelect = document.querySelector('#appointments_consulate_appointment_facility_id');
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+        return {
+            scheduleId: scheduleMatch ? scheduleMatch[1] : null,
+            facilityId: facilitySelect ? facilitySelect.value : null,
+            csrf: csrfToken
+        };
+    });
+    log(`Cached IDs: schedule=${cachedIds.scheduleId}, facility=${cachedIds.facilityId}`);
+
     // Click continue if visible
     try {
         await page.waitForSelector('input[type="submit"][value="Continue"]', { timeout: 3000 });
@@ -627,27 +644,18 @@ async function performBooking(page, slot) {
     const startTime = Date.now();
     let capturedTime = null;
 
-    try {
-        // Get IDs from URL and form
-        const ids = await page.evaluate(() => {
-            const url = window.location.href;
-            const scheduleMatch = url.match(/schedule\/(\d+)/);
-            const facilitySelect = document.querySelector('#appointments_consulate_appointment_facility_id');
-            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
-            return {
-                scheduleId: scheduleMatch ? scheduleMatch[1] : null,
-                facilityId: facilitySelect ? facilitySelect.value : null,
-                csrf: csrfToken
-            };
-        });
+    // Notify booking started
+    sendTelegram(`🚀 <b>BOOKING STARTED!</b>\n📅 ${slot.date}\n📍 ${CONFIG.preferences.city}\n📧 ${CONFIG.credentials.email}`);
 
-        if (!ids?.scheduleId || !ids?.facilityId) {
-            log(`❌ Missing IDs`, 'ERROR');
+    try {
+        // Use cached IDs (saved ~25ms)
+        if (!cachedIds?.scheduleId || !cachedIds?.facilityId) {
+            log(`❌ Missing cached IDs`, 'ERROR');
             return false;
         }
 
         // Fetch times via API with proper headers
-        const timesUrl = `${CONFIG.preferences.baseUrl}/schedule/${ids.scheduleId}/appointment/times/${ids.facilityId}.json?date=${slot.date}&appointments[expedite]=false`;
+        const timesUrl = `${CONFIG.preferences.baseUrl}/schedule/${cachedIds.scheduleId}/appointment/times/${cachedIds.facilityId}.json?date=${slot.date}&appointments[expedite]=false`;
 
         const timeResult = await page.evaluate(async ({ url, csrf }) => {
             try {
@@ -666,7 +674,7 @@ async function performBooking(page, slot) {
             } catch (e) {
                 return { error: e.message };
             }
-        }, { url: timesUrl, csrf: ids.csrf });
+        }, { url: timesUrl, csrf: cachedIds.csrf });
 
         if (timeResult.error) {
             log(`❌ Times API: ${timeResult.error}`, 'ERROR');
@@ -728,18 +736,25 @@ async function performBooking(page, slot) {
             }
         }
 
-        // Wait for page to settle then click confirm
-        await page.waitForLoadState('domcontentloaded').catch(() => {});
+        // Fast polling for confirm button (instead of waitForLoadState ~500ms)
+        let confirmClicked = false;
+        for (let i = 0; i < 100; i++) {  // 100 attempts, ~10ms each = 1s max
+            const clicked = await page.evaluate(() => {
+                const btn = document.querySelector('a.button.alert') ||
+                           document.querySelector('input[value="Confirm"]');
+                if (btn) { btn.click(); return true; }
+                return false;
+            }).catch(() => false);
 
-        // Click confirm button
-        const confirmBtn = await page.$('a.button.alert') || await page.$('input[value="Confirm"]');
-        if (confirmBtn) {
-            await confirmBtn.click();
-            log(`✅ Confirm clicked`, 'SUCCESS');
+            if (clicked) {
+                confirmClicked = true;
+                log(`✅ Confirm clicked`, 'SUCCESS');
+                break;
+            }
+            await page.waitForTimeout(10);
         }
 
-        // Final check
-        await page.waitForLoadState('domcontentloaded').catch(() => {});
+        // Final check (no wait - just check immediately)
         const stillOnForm = await page.$('#appointments_submit');
         const elapsed = Date.now() - startTime;
 
@@ -937,8 +952,8 @@ async function runBot() {
                 if (!bookingInProgress && checkCount % 50 === 0) {
                     const pageText = await page.innerText('body').catch(() => '');
                     if (pageText.toLowerCase().includes('system is busy')) {
-                        log('System busy - waiting 60s', 'WARN');
-                        await page.waitForTimeout(60000);
+                        log('System busy - waiting 5s', 'WARN');
+                        await page.waitForTimeout(5000);
                         continue;
                     }
                     // Check if we got logged out
