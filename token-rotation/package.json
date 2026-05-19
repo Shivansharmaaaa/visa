@@ -1,0 +1,18 @@
+{
+  "name": "token-rotation-bot",
+  "version": "1.0.0",
+  "description": "US Visa appointment bot with token rotation across multiple accounts - PARALLEL execution",
+  "main": "token-bot.js",
+  "scripts": {
+    "start": "node token-bot.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "fingerprint-generator": "^2.1.79",
+    "fingerprint-injector": "^2.1.79",
+    "playwright": "^1.40.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}

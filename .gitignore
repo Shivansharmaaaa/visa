@@ -3,9 +3,19 @@ node_modules/
 
 # Environment and secrets - NEVER commit
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 credentials.txt
+j.txt
+*.creds
+*credentials*
+*password*
+*secret*
+
+# Scraped data / captured tokens
+api results.json
+api-catalog-*.json
+api_results*.json
 
 # OS
 .DS_Store

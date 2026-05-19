@@ -1,0 +1,41 @@
+{
+  "name": "amazon-hiring-bot",
+  "version": "1.0.0",
+  "description": "Amazon Hiring Shift Sniper Bot",
+  "main": "src/index.js",
+  "bin": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "build": "pkg . --out-path dist",
+    "test": "jest",
+    "test:unit": "jest tests/unit",
+    "test:property": "jest tests/property"
+  },
+  "dependencies": {
+    "inquirer": "^8.2.6",
+    "node-fetch": "^2.7.0",
+    "play-sound": "^1.1.6",
+    "puppeteer": "^21.11.0",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "fast-check": "^3.19.0",
+    "jest": "^29.7.0",
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "targets": ["node18-win-x64"],
+    "output": "amazon-bot.exe",
+    "assets": [
+      "sounds/**",
+      "config.json"
+    ],
+    "scripts": [
+      "src/**/*.js"
+    ]
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/tests/**/*.test.js"]
+  }
+}

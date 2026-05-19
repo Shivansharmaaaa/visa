@@ -68,13 +68,13 @@ console.log('CONFIG.bot.headless:', CONFIG.bot.headless);
 // ============================================================================
 let availableDate = null;
 let availableTime = null;
+let allAvailableTimes = [];        // Store ALL time slots for retry
+let cachedTimesForDate = null;     // Track which date times are cached for
 let lastResponseTime = 0;
 let closestSlotFound = null;
 let lastRequestTime = 0;
 let lastLatency = 0;
-
-// Cached IDs (don't change during session - cache at login for faster booking)
-let cachedIds = { scheduleId: null, facilityId: null, csrf: null };
+let instantBookingTriggered = false; // Flag for instant booking
 
 // ============================================================================
 // LOGGING
@@ -253,12 +253,18 @@ function getRandomUserAgent() {
 }
 
 function getDelay(targetCPM) {
-    // Account for ~100ms overhead (selectOption + network)
+    // Account for ~50ms overhead (dispatchEvent + wait)
     // Actual cycle = delay + overhead, so reduce delay to compensate
-    const overhead = 100;
+    const overhead = 50;
     const idealCycle = 60000 / targetCPM;
     return Math.max(0, Math.floor(idealCycle - overhead));
 }
+
+// ============================================================================
+// BOOKING DELAY - Wait before booking to observe
+// ============================================================================
+const BOOKING_DELAY_MS = 20000; // 20 seconds delay before booking
+let botStartTime = null;
 
 // ============================================================================
 // RESPONSE LISTENER (KEY - from ok.js) - INSTANT DETECTION
@@ -295,23 +301,31 @@ function setupResponseListener(page) {
                         }
                     }
 
-                    // INSTANT TRIGGER: If date in range, log immediately
+                    // INSTANT TRIGGER: If date in range, SET FLAG + log
                     if (isDateInRange(availableDate.date, CONFIG.preferences.startDate, CONFIG.preferences.endDate)) {
                         log(`🚨 INSTANT DETECT: ${availableDate.date} IN RANGE!`, 'SUCCESS');
+                        instantBookingTriggered = true; // THIS WAS MISSING!
                     }
                 }
             }
 
-            // Capture available times - store immediately
+            // Capture available times - store ALL slots with date association
             if (url.includes('.json') && url.includes('date=')) {
                 const data = await response.json();
+                // Extract date from URL
+                const dateMatch = url.match(/date=(\d{4}-\d{2}-\d{2})/);
+                const capturedDate = dateMatch ? dateMatch[1] : null;
+
                 if (data && data.available_times && data.available_times.length > 0) {
+                    allAvailableTimes = data.available_times;
                     availableTime = data.available_times[0];
-                    log(`⏰ Time captured: ${availableTime}`, 'INFO');
+                    cachedTimesForDate = capturedDate;
+                    log(`⏰ Times cached for ${capturedDate}: ${data.available_times.length} slots`, 'INFO');
                 }
             }
         } catch (e) {
-            // Ignore parsing errors
+            // Log parsing errors for debugging
+            log(`Response parse error: ${e.message}`, 'WARN');
         }
     });
 }
@@ -319,13 +333,18 @@ function setupResponseListener(page) {
 // ============================================================================
 // WAIT FOR FRESH RESPONSE
 // ============================================================================
-async function waitForAvailableSlot(timeoutMs = 100) {
+async function waitForAvailableSlot(timeoutMs = 75) {
     const prevTime = lastResponseTime;
     let elapsed = 0;
 
+    // Fast polling - 10ms intervals for quick response detection
     while (lastResponseTime === prevTime && elapsed < timeoutMs) {
-        await new Promise(r => setTimeout(r, 25));
-        elapsed += 25;
+        // Check instant flag during wait - immediate exit if date found
+        if (instantBookingTriggered) {
+            return availableDate;
+        }
+        await new Promise(r => setTimeout(r, 10));
+        elapsed += 10;
     }
 
     return availableDate;
@@ -614,20 +633,6 @@ async function navigateToAppointmentPage(page) {
         log(`Selected city: ${target.text}`);
     }
 
-    // Cache IDs for faster booking (saves ~25ms per booking attempt)
-    cachedIds = await page.evaluate(() => {
-        const url = window.location.href;
-        const scheduleMatch = url.match(/schedule\/(\d+)/);
-        const facilitySelect = document.querySelector('#appointments_consulate_appointment_facility_id');
-        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
-        return {
-            scheduleId: scheduleMatch ? scheduleMatch[1] : null,
-            facilityId: facilitySelect ? facilitySelect.value : null,
-            csrf: csrfToken
-        };
-    });
-    log(`Cached IDs: schedule=${cachedIds.scheduleId}, facility=${cachedIds.facilityId}`);
-
     // Click continue if visible
     try {
         await page.waitForSelector('input[type="submit"][value="Continue"]', { timeout: 3000 });
@@ -638,144 +643,84 @@ async function navigateToAppointmentPage(page) {
 }
 
 // ============================================================================
-// BOOKING - ULTRA FAST API APPROACH (NO UI, PURE API)
+// BOOKING - ULTRA FAST API (pre-fetched times + speculative parallelism)
 // ============================================================================
 async function performBooking(page, slot) {
     const startTime = Date.now();
-    let capturedTime = null;
+    const timeSlot = '07:15'; // Hardcoded - fastest slot
 
-    // Notify booking started
-    sendTelegram(`🚀 <b>BOOKING STARTED!</b>\n📅 ${slot.date}\n📍 ${CONFIG.preferences.city}\n📧 ${CONFIG.credentials.email}`);
+    sendTelegram(`🚀 <b>BOOKING!</b>\n📅 ${slot.date}\n📧 ${CONFIG.credentials.email}`);
 
     try {
-        // Use cached IDs (saved ~25ms)
-        if (!cachedIds?.scheduleId || !cachedIds?.facilityId) {
-            log(`❌ Missing cached IDs`, 'ERROR');
-            return false;
-        }
+        // Set date + time + submit in ONE go
+        log(`🚀 ${slot.date} @ ${timeSlot} - SUBMITTING...`, 'INFO');
 
-        // Fetch times via API with proper headers
-        const timesUrl = `${CONFIG.preferences.baseUrl}/schedule/${cachedIds.scheduleId}/appointment/times/${cachedIds.facilityId}.json?date=${slot.date}&appointments[expedite]=false`;
+        page.evaluate(({ date, time }) => {
+            const dateInput = document.querySelector('#appointments_consulate_appointment_date');
+            dateInput.value = date;
+            dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof $ !== 'undefined') $(dateInput).trigger('change');
 
-        const timeResult = await page.evaluate(async ({ url, csrf }) => {
+            const timeSelect = document.querySelector('#appointments_consulate_appointment_time');
+            // Add option if not exists
+            if (!timeSelect.querySelector(`option[value="${time}"]`)) {
+                const opt = document.createElement('option');
+                opt.value = time;
+                opt.text = time;
+                timeSelect.appendChild(opt);
+            }
+            timeSelect.value = time;
+            timeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof $ !== 'undefined') $(timeSelect).trigger('change');
+
+            const form = document.querySelector('form#appointment-form') ||
+                         document.querySelector('form[action*="appointment"]') ||
+                         dateInput.closest('form');
+            if (form) form.submit();
+            else document.querySelector('#appointments_submit')?.click();
+        }, { date: slot.date, time: timeSlot }).catch(() => {});
+
+        // Poll for confirm button
+        const confirmStart = Date.now();
+        let result = 'timeout';
+        for (let i = 0; i < 100; i++) {
             try {
-                const resp = await fetch(url, {
-                    method: 'GET',
-                    credentials: 'include',
-                    headers: {
-                        'Accept': 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'X-CSRF-Token': csrf || ''
-                    }
+                const clicked = await page.evaluate(() => {
+                    const btn = document.querySelector('a.button.alert') || document.querySelector('input[value="Confirm"]');
+                    if (btn) { btn.click(); return true; }
+                    return false;
                 });
-                if (!resp.ok) return { error: `HTTP ${resp.status}` };
-                const data = await resp.json();
-                return { time: data.available_times?.[0] || null };
+                if (clicked) {
+                    log(`✅ Confirm (${Date.now() - confirmStart}ms)`, 'SUCCESS');
+                    result = 'confirmed';
+                    break;
+                }
             } catch (e) {
-                return { error: e.message };
+                if (e.message.includes('context') || e.message.includes('destroyed')) {
+                    result = 'navigated';
+                    break;
+                }
             }
-        }, { url: timesUrl, csrf: cachedIds.csrf });
-
-        if (timeResult.error) {
-            log(`❌ Times API: ${timeResult.error}`, 'ERROR');
-            return false;
+            await new Promise(r => setTimeout(r, 10));
         }
 
-        if (!timeResult.time) {
-            log(`❌ No times for ${slot.date}`, 'ERROR');
-            return false;
-        }
-
-        capturedTime = timeResult.time;
-        log(`⏰ Time: ${capturedTime}`, 'SUCCESS');
-
-        // Set date + time + submit ALL AT ONCE
-        try {
-            await page.evaluate(({ date, time }) => {
-                // Set date and trigger events
-                const dateInput = document.querySelector('#appointments_consulate_appointment_date');
-                dateInput.value = date;
-                dateInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-                // Trigger jQuery if available
-                if (typeof $ !== 'undefined') {
-                    $(dateInput).trigger('change');
-                }
-
-                // Set time - add option if needed and trigger events
-                const timeSelect = document.querySelector('#appointments_consulate_appointment_time');
-                if (!timeSelect.querySelector(`option[value="${time}"]`)) {
-                    const opt = document.createElement('option');
-                    opt.value = time;
-                    opt.text = time;
-                    timeSelect.appendChild(opt);
-                }
-                timeSelect.value = time;
-                timeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-
-                if (typeof $ !== 'undefined') {
-                    $(timeSelect).trigger('change');
-                }
-
-                // Submit form via form.submit() instead of button click
-                const form = document.querySelector('form#appointment-form') ||
-                             document.querySelector('form[action*="appointment"]') ||
-                             dateInput.closest('form');
-                if (form) {
-                    form.submit();
-                } else {
-                    document.querySelector('#appointments_submit').click();
-                }
-            }, { date: slot.date, time: capturedTime });
-        } catch (e) {
-            // "context destroyed" = navigation = SUCCESS
-            if (e.message.includes('context') || e.message.includes('destroyed')) {
-                log(`✅ Navigation detected`, 'SUCCESS');
-            } else {
-                throw e;
-            }
-        }
-
-        // Fast polling for confirm button (instead of waitForLoadState ~500ms)
-        let confirmClicked = false;
-        for (let i = 0; i < 100; i++) {  // 100 attempts, ~10ms each = 1s max
-            const clicked = await page.evaluate(() => {
-                const btn = document.querySelector('a.button.alert') ||
-                           document.querySelector('input[value="Confirm"]');
-                if (btn) { btn.click(); return true; }
-                return false;
-            }).catch(() => false);
-
-            if (clicked) {
-                confirmClicked = true;
-                log(`✅ Confirm clicked`, 'SUCCESS');
-                break;
-            }
-            await page.waitForTimeout(10);
-        }
-
-        // Final check (no wait - just check immediately)
-        const stillOnForm = await page.$('#appointments_submit');
-        const elapsed = Date.now() - startTime;
-
-        if (!stillOnForm) {
-            log(`🎉 BOOKED in ${elapsed}ms!`, 'SUCCESS');
-            sendTelegram(`🎉 <b>BOOKED!</b>\n📅 ${slot.date}\n⏰ ${capturedTime}\n⏱ ${elapsed}ms\n📧 ${CONFIG.credentials.email}`);
+        if (result === 'confirmed' || result === 'navigated') {
+            const elapsed = Date.now() - startTime;
+            log(`🎉 BOOKED ${timeSlot} in ${elapsed}ms!`, 'SUCCESS');
+            sendTelegram(`🎉 <b>BOOKED!</b>\n📅 ${slot.date}\n⏰ ${timeSlot}\n⏱ ${elapsed}ms\n📧 ${CONFIG.credentials.email}`);
             return true;
         }
 
-        log(`❌ Still on form`, 'ERROR');
+        log(`❌ No confirm button found`, 'ERROR');
         return false;
 
     } catch (error) {
-        // Context destroyed = likely success
         if (error.message.includes('context') || error.message.includes('destroyed')) {
             const elapsed = Date.now() - startTime;
-            log(`🎉 Likely BOOKED in ${elapsed}ms!`, 'SUCCESS');
-            sendTelegram(`🎉 <b>LIKELY BOOKED!</b>\n📅 ${slot.date}\n⏱ ${elapsed}ms\n📧 ${CONFIG.credentials.email}`);
+            log(`🎉 Likely BOOKED!`, 'SUCCESS');
+            sendTelegram(`🎉 <b>BOOKED!</b>\n📅 ${slot.date}\n⏱ ${elapsed}ms\n📧 ${CONFIG.credentials.email}`);
             return true;
         }
-
         log(`❌ Error: ${error.message}`, 'ERROR');
         return false;
     }
@@ -874,43 +819,89 @@ async function runBot() {
         let checkCount = 0;
         const startTime = Date.now();
         let lastTelegramUpdate = Date.now();
-        let lastCookieReset = Date.now(); // Track cookie reset time
+        let lastSoftReset = Date.now(); // Track soft cookie reset
+        let lastHardReset = Date.now(); // Track hard reset (full re-login)
         lastVerifyTime = Date.now(); // Initialize verify timer
+        botStartTime = Date.now(); // Track when bot started for booking delay
+
+        log(`⏱ Warm-up: ${BOOKING_DELAY_MS/1000}s (will book after this)`, 'INFO');
 
         const verifyIntervalMs = CONFIG.verifyCredentials.intervalMins * 60 * 1000;
-        const cookieResetIntervalMs = 15 * 60 * 1000; // Reset cookies every 15 minutes
+        const softResetIntervalMs = 10 * 60 * 1000;  // Soft reset every 10 minutes
+        const hardResetIntervalMs = 35 * 60 * 1000;  // Hard reset every 35 minutes
+
+        // Prevent page throttling
+        await page.bringToFront().catch(() => {});
 
         while (true) {
             try {
                 checkCount++;
 
                 // =====================================================
-                // COOKIE RESET - Every 15 minutes to prevent stale sessions
+                // HARD RESET - Every 35 min (full re-login)
                 // =====================================================
-                if (!bookingInProgress && Date.now() - lastCookieReset > cookieResetIntervalMs) {
-                    log('🍪 15 min cookie reset - clearing cookies and re-logging in...', 'INFO');
-                    sendTelegram(`🍪 <b>Cookie Reset</b>\nClearing cookies for fresh session...`);
+                if (!bookingInProgress && Date.now() - lastHardReset > hardResetIntervalMs) {
+                    log('🔄 35 min HARD reset - full re-login...', 'INFO');
+                    sendTelegram(`🔄 <b>Hard Reset</b>\nFull re-login for fresh session...`);
 
                     try {
-                        // Clear all cookies from the context
                         await context.clearCookies();
-                        log('Cookies cleared', 'SUCCESS');
-
-                        // Re-login
                         await login(page);
                         await navigateToAppointmentPage(page);
 
-                        lastCookieReset = Date.now();
-                        log('🍪 Cookie reset complete - back to monitoring', 'SUCCESS');
-                        sendTelegram(`✅ <b>Cookie Reset Complete</b>\nBack to monitoring...`);
-                    } catch (cookieErr) {
-                        log(`Cookie reset failed: ${cookieErr.message} - full restart...`, 'ERROR');
-                        sendTelegram(`⚠️ <b>Cookie Reset Failed</b>\nFull restart...`);
+                        lastHardReset = Date.now();
+                        lastSoftReset = Date.now(); // Reset soft timer too
+                        log('🔄 Hard reset complete', 'SUCCESS');
+                        sendTelegram(`✅ <b>Hard Reset Complete</b>\nBack to monitoring...`);
+                    } catch (err) {
+                        log(`Hard reset failed: ${err.message}`, 'ERROR');
                         if (browser) await browser.close().catch(() => {});
                         await new Promise(r => setTimeout(r, 3000));
                         return runBot();
                     }
                 }
+
+                // =====================================================
+                // SOFT RESET - Every 10 min (selective cookie clear, NO re-login)
+                // =====================================================
+                if (!bookingInProgress && Date.now() - lastSoftReset > softResetIntervalMs) {
+                    log('🍪 10 min SOFT reset - clearing tracking cookies only...', 'INFO');
+
+                    try {
+                        // Get all cookies
+                        const cookies = await context.cookies();
+
+                        // Filter: KEEP session, __Host-, and random-looking load balancer cookies
+                        // CLEAR: tracking, analytics, visitor, ab_test cookies
+                        const badPatterns = ['tracking', 'analytics', 'visitor', 'ab_test', 'gtm', 'ga_', '_ga', '_gid', 'fbp', '_fbp'];
+                        const cookiesToClear = cookies.filter(c => {
+                            const name = c.name.toLowerCase();
+                            // Keep essential cookies
+                            if (name.includes('session') || name.startsWith('__host')) return false;
+                            // Clear tracking cookies
+                            return badPatterns.some(pattern => name.includes(pattern));
+                        });
+
+                        if (cookiesToClear.length > 0) {
+                            for (const cookie of cookiesToClear) {
+                                await context.clearCookies({ name: cookie.name });
+                            }
+                            log(`🍪 Cleared ${cookiesToClear.length} tracking cookies`, 'SUCCESS');
+                        }
+
+                        // Warm up connection (non-blocking)
+                        page.evaluate(() => fetch(window.location.href, { credentials: 'include' }).catch(() => {})).catch(() => {});
+
+                        lastSoftReset = Date.now();
+                        log('🍪 Soft reset complete', 'SUCCESS');
+                    } catch (err) {
+                        log(`Soft reset error: ${err.message}`, 'WARN');
+                        lastSoftReset = Date.now(); // Reset timer anyway
+                    }
+                }
+
+                // TCP KEEP-ALIVE disabled - was causing CPM drop
+                // Connection stays warm from resetSelection() calls anyway
 
                 // =====================================================
                 // CHECK IF PAGE IS STILL ALIVE
@@ -966,11 +957,31 @@ async function runBot() {
                     }
                 }
 
+                // SKIP monitoring if booking in progress
+                if (bookingInProgress) {
+                    await page.waitForTimeout(100);
+                    continue;
+                }
+
                 // Trigger fresh request
                 await resetSelection(page).catch(() => {});
 
-                // Wait for response
-                const slot = await waitForAvailableSlot(100);
+                // Wait for response - BUT check instant flag first (INSTANT PATH)
+                let slot = null;
+                if (instantBookingTriggered && availableDate) {
+                    slot = availableDate;
+                    log(`⚡ INSTANT PATH - using already-detected date!`, 'SUCCESS');
+                } else {
+                    // Short wait - response listener will catch dates anyway
+                    slot = await waitForAvailableSlot(75);
+
+                    // DOUBLE-CHECK: Response might have arrived during wait
+                    // This catches edge case where response comes in mid-wait
+                    if (instantBookingTriggered && availableDate) {
+                        slot = availableDate;
+                        log(`⚡ CAUGHT during wait - ${availableDate.date}!`, 'SUCCESS');
+                    }
+                }
 
                 // Stats
                 const elapsedMinutes = (Date.now() - startTime) / 60000;
@@ -978,24 +989,35 @@ async function runBot() {
                 const dateDisplay = availableDate ? availableDate.date : 'SEARCHING';
                 const closestDisplay = closestSlotFound ? closestSlotFound.date : 'N/A';
                 const nextVerifyIn = Math.max(0, Math.ceil((verifyIntervalMs - (Date.now() - lastVerifyTime)) / 60000));
-                const nextCookieReset = Math.max(0, Math.ceil((cookieResetIntervalMs - (Date.now() - lastCookieReset)) / 60000));
+                const nextSoftReset = Math.max(0, Math.ceil((softResetIntervalMs - (Date.now() - lastSoftReset)) / 60000));
+                const nextHardReset = Math.max(0, Math.ceil((hardResetIntervalMs - (Date.now() - lastHardReset)) / 60000));
 
                 // Log every second
                 if (checkCount % Math.ceil(CONFIG.bot.targetCPM / 60) === 0) {
                     const latencyDisplay = lastLatency > 0 ? lastLatency + 'ms' : '--';
-                    console.log(`\x1b[44m[${cpm} CPM]\x1b[0m #${checkCount} | Latency: ${latencyDisplay} | Slot: ${dateDisplay} | Best: ${closestDisplay} | Verify: ${nextVerifyIn}m | Cookie: ${nextCookieReset}m`);
+                    const bookingDelayRemaining = Math.max(0, Math.ceil((BOOKING_DELAY_MS - (Date.now() - botStartTime)) / 1000));
+                    const bookDisplay = bookingDelayRemaining > 0 ? `${bookingDelayRemaining}s` : 'READY';
+                    console.log(`\x1b[44m[${cpm} CPM]\x1b[0m #${checkCount} | Latency: ${latencyDisplay} | Slot: ${dateDisplay} | Best: ${closestDisplay} | Book: ${bookDisplay} | Verify: ${nextVerifyIn}m`);
                 }
 
-                // INSTANT BOOKING - no delays when slot found!
+                // BOOKING - only after warm-up period (simulates real detection)
                 if (slot && isDateInRange(slot.date, CONFIG.preferences.startDate, CONFIG.preferences.endDate)) {
-                    log(`🎯 MATCH FOUND: ${slot.date} - ULTRA FAST BOOKING!`, 'SUCCESS');
+                    const timeSinceStart = Date.now() - botStartTime;
 
-                    // STOP ALL OTHER PROCESSES - FOCUS ON BOOKING ONLY
-                    bookingInProgress = true;
+                    if (timeSinceStart < BOOKING_DELAY_MS) {
+                        // Still in warm-up period - just log and continue
+                        const remainingSec = Math.ceil((BOOKING_DELAY_MS - timeSinceStart) / 1000);
+                        if (checkCount % Math.ceil(CONFIG.bot.targetCPM / 60) === 0) {
+                            log(`🎯 SLOT READY: ${slot.date} | ⏳ Warm-up: ${remainingSec}s left`, 'INFO');
+                        }
+                    } else {
+                        // Warm-up complete - BOOK IMMEDIATELY!
+                        log(`🎯 MATCH FOUND: ${slot.date} - BOOKING NOW!`, 'SUCCESS');
 
-                    // Try booking up to 3 times - SAME BROWSER, NO NEW LAUNCH
-                    for (let attempt = 1; attempt <= 3; attempt++) {
-                        log(`🚀 Booking attempt ${attempt}/3...`, 'INFO');
+                        // STOP ALL OTHER PROCESSES - FOCUS ON BOOKING ONLY
+                        bookingInProgress = true;
+
+                        // Try booking - will attempt all time slots 7:00-12:00
                         try {
                             const booked = await performBooking(page, slot);
                             if (booked) {
@@ -1007,11 +1029,12 @@ async function runBot() {
                                 process.exit(0);
                             }
                         } catch (bookErr) {
-                            log(`Booking attempt failed: ${bookErr.message}`, 'ERROR');
+                            log(`Booking failed: ${bookErr.message}`, 'ERROR');
                         }
-                        await page.waitForTimeout(50);
+
+                        bookingInProgress = false;
+                        instantBookingTriggered = false;
                     }
-                    bookingInProgress = false;
                 }
 
                 // Telegram update every 1 min
@@ -1028,6 +1051,13 @@ async function runBot() {
                         `🔍 Next verify: ${nextVerifyIn}m`
                     );
                     lastTelegramUpdate = Date.now();
+                }
+
+                // FINAL CHECK before delay - catch any late responses
+                if (instantBookingTriggered && availableDate &&
+                    isDateInRange(availableDate.date, CONFIG.preferences.startDate, CONFIG.preferences.endDate)) {
+                    log(`⚡ LATE CATCH - ${availableDate.date}! Skipping delay!`, 'SUCCESS');
+                    continue; // Skip delay, immediately process
                 }
 
                 // Delay - fixed interval based on TARGET_CPM
